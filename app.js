@@ -9,10 +9,11 @@ const listEl = $("#recipeList");
 const detailEl = $("#recipeDetail");
 const narrow = window.matchMedia("(max-width:820px)");
 
-const state = { type: "all", query: "", selected: null, multiplier: 1, tab: "recipe", checked: new Set() };
+const state = { type: "all", query: "", selected: null, lastViewed: null, multiplier: 1, checked: new Set() };
 let recipes = [];
 let vault = null; // { key: CryptoKey, salt: string }
 const imageCache = new Map();
+if ("scrollRestoration" in history) history.scrollRestoration = "manual"; // 목록 위치는 직접 맞춘다
 
 const ICON = {
   check: '<svg viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.5l4.5-5"/></svg>',
@@ -255,7 +256,6 @@ function renderDetail() {
       .join("")}</ol></div>`)
     .join("");
 
-  detailEl.dataset.tab = state.tab;
   detailEl.innerHTML = `
     <div class="detail-top">
       <button class="ghost back" data-back>${ICON.back}목록</button>
@@ -269,7 +269,6 @@ function renderDetail() {
       <div class="recipe-body">
         <h1 class="title">${escapeHtml(item.name)}</h1>
         ${facts ? `<dl class="facts">${facts}</dl>` : ""}
-        ${item.image ? `<div class="tabs" role="tablist"><button role="tab" data-tab="recipe" class="${state.tab === "recipe" ? "is-active" : ""}">레시피</button><button role="tab" data-tab="original" class="${state.tab === "original" ? "is-active" : ""}">원본 이미지</button></div>` : ""}
         <div class="recipe-content">
           <section class="block">
             <div class="block-head"><h2>재료<small>${item._ingredientCount}가지</small></h2>${scaler}</div>
@@ -305,30 +304,47 @@ function renderDetail() {
   }
 }
 
-function select(id, { push = true } = {}) {
-  if (state.selected !== id) {
-    state.checked.clear();
-    state.tab = "recipe";
-  }
+// 목록에서 상세로 들어갈 때만 기록을 하나 쌓고, 상세 안에서의 이동(이전/다음)은 기록을 덮어쓴다.
+// 그래서 뒤로 가기를 누르면 언제나 목록으로 돌아간다.
+function select(id, { nav = "auto" } = {}) {
+  if (state.selected !== id) state.checked.clear();
   state.selected = id;
+  if (id) state.lastViewed = id;
   document.body.classList.toggle("reading", Boolean(id) && narrow.matches);
-  if (push) history.pushState(null, "", id ? `#${id}` : location.pathname);
+  if (nav === "auto") {
+    const url = id ? `#${id}` : location.pathname + location.search;
+    if (id && !history.state?.detail) history.pushState({ detail: true }, "", url);
+    else history.replaceState(id ? { detail: true } : null, "", url);
+  }
   renderList();
   renderDetail();
   if (id) {
     window.scrollTo(0, 0);
     $("#main").scrollTop = 0;
     listEl.querySelector(".is-active")?.scrollIntoView({ block: "nearest" });
+  } else {
+    focusLastViewed();
   }
+}
+
+// 목록으로 돌아오면 마지막으로 본 메뉴가 화면 가운데 오도록 스크롤하고 잠깐 강조한다.
+function focusLastViewed() {
+  const button = state.lastViewed && listEl.querySelector(`[data-id="${state.lastViewed}"]`);
+  if (!button) return;
+  button.scrollIntoView({ block: "center" });
+  button.focus({ preventScroll: true });
+  button.classList.add("is-recent");
+  setTimeout(() => button.classList.remove("is-recent"), 1600);
 }
 
 function fromHash() {
   const id = decodeURIComponent(location.hash.slice(1));
-  if (recipes.some((r) => r.id === id)) return select(id, { push: false });
+  if (recipes.some((r) => r.id === id)) return select(id, { nav: "none" });
   document.body.classList.remove("reading");
   state.selected = narrow.matches ? null : state.selected || filtered()[0]?.id || null;
   renderList();
   renderDetail();
+  if (narrow.matches) focusLastViewed();
 }
 
 /* ---------- 이미지 뷰어 ---------- */
@@ -403,17 +419,10 @@ detailEl.addEventListener("click", (e) => {
   }
   const row = target.closest("[data-check]");
   if (row) return toggleCheck(row);
-  const tab = target.closest(".tabs [data-tab]");
-  if (tab) {
-    state.tab = tab.dataset.tab;
-    detailEl.dataset.tab = state.tab;
-    detailEl.querySelectorAll(".tabs [data-tab]").forEach((b) => b.classList.toggle("is-active", b === tab));
-    return;
-  }
   const go = target.closest(".pager [data-id]");
   if (go) return select(go.dataset.id);
   if (target.closest("[data-zoom]")) return openViewer();
-  if (target.closest("[data-back]")) return location.hash ? history.back() : select(null);
+  if (target.closest("[data-back]")) return history.state?.detail && history.length > 1 ? history.back() : select(null);
   if (target.closest("[data-print]")) return window.print();
   const copy = target.closest("[data-copy]");
   if (copy) {
